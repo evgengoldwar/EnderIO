@@ -84,6 +84,9 @@ public class TileConduitBundle extends TileEntityEio implements IConduitBundle {
 
     private boolean clientUpdated = false;
 
+    /** Whether this bundle held 2+ conduits the last time neighbours were told about it, see {@link #getOffset} */
+    private boolean lastMultiConduit = false;
+
     private int lightOpacity = -1;
 
     @SideOnly(Side.CLIENT)
@@ -271,6 +274,8 @@ public class TileConduitBundle extends TileEntityEio implements IConduitBundle {
 
     @Override
     public void doUpdate() {
+        checkMultiConduitChanged();
+
         for (IConduit conduit : conduits) {
             conduit.updateEntity(worldObj);
         }
@@ -401,6 +406,7 @@ public class TileConduitBundle extends TileEntityEio implements IConduitBundle {
         conduits.add(conduit);
         conduit.setBundle(this);
         conduit.onAddedToBundle();
+        invalidateGeometry();
         dirty();
     }
 
@@ -441,9 +447,81 @@ public class TileConduitBundle extends TileEntityEio implements IConduitBundle {
         conduit.onRemovedFromBundle();
         conduits.remove(conduit);
         conduit.setBundle(null);
+        invalidateGeometry();
         if (notify) {
             dirty();
         }
+    }
+
+    /**
+     * Client side prediction: removes the conduit right away so the player sees it disappear instantly instead of
+     * waiting for the server to resend the whole bundle. The server update that follows just confirms (or corrects)
+     * it.
+     */
+    public void removeConduitClientSide(IConduit conduit) {
+        if (worldObj == null || !worldObj.isRemote || !conduits.remove(conduit)) {
+            return;
+        }
+        invalidateGeometry();
+        checkMultiConduitChanged();
+        worldObj.markBlockRangeForRenderUpdate(xCoord, yCoord, zCoord, xCoord, yCoord, zCoord);
+    }
+
+    /**
+     * Forces all geometry of this bundle (conduit arms, cores, joints) to be rebuilt.
+     */
+    private void invalidateGeometry() {
+        for (IConduit con : conduits) {
+            if (con instanceof AbstractConduit) {
+                ((AbstractConduit) con).geometryChanged();
+            }
+        }
+        collidablesDirty = true;
+        connectorsDirty = true;
+    }
+
+    /**
+     * The lane layout of the faces between two bundles depends on how many conduits both of them hold (see
+     * {@link #getOffset}), so neighbours have to rebuild their geometry when that changes.
+     */
+    private void checkMultiConduitChanged() {
+        if (worldObj == null) {
+            return;
+        }
+        boolean multi = conduits.size() >= 2;
+        if (multi == lastMultiConduit) {
+            return;
+        }
+        lastMultiConduit = multi;
+        invalidateGeometry();
+        for (ForgeDirection dir : ForgeDirection.VALID_DIRECTIONS) {
+            TileConduitBundle neighbour = getNeighbourBundle(dir);
+            if (neighbour != null) {
+                neighbour.invalidateGeometry();
+                if (worldObj.isRemote) {
+                    worldObj.markBlockRangeForRenderUpdate(
+                            neighbour.xCoord,
+                            neighbour.yCoord,
+                            neighbour.zCoord,
+                            neighbour.xCoord,
+                            neighbour.yCoord,
+                            neighbour.zCoord);
+                }
+            }
+        }
+    }
+
+    private TileConduitBundle getNeighbourBundle(ForgeDirection dir) {
+        if (worldObj == null) {
+            return null;
+        }
+        int x = xCoord + dir.offsetX, y = yCoord + dir.offsetY, z = zCoord + dir.offsetZ;
+        // never load chunks just to compute some geometry
+        if (!worldObj.blockExists(x, y, z)) {
+            return null;
+        }
+        TileEntity te = worldObj.getTileEntity(x, y, z);
+        return te instanceof TileConduitBundle ? (TileConduitBundle) te : null;
     }
 
     @Override
@@ -504,10 +582,26 @@ public class TileConduitBundle extends TileEntityEio implements IConduitBundle {
 
     @Override
     public Offset getOffset(Class<? extends IConduit> type, ForgeDirection dir) {
-        if (getConnectionCount(dir) < 2) {
-            return Offset.NONE;
+        if (getConnectionCount(dir) >= 2 || usesLanes(dir)) {
+            return Offsets.get(type, dir);
         }
-        return Offsets.get(type, dir);
+        return Offset.NONE;
+    }
+
+    /**
+     * Conduits in a bundle with more than one conduit always run in their own lane, so they don't move around when
+     * another conduit is added or broken and never cross through the same center. A face uses lanes if the bundle on
+     * either side of it holds several conduits; both sides come to the same answer, so the arms still line up.
+     */
+    private boolean usesLanes(ForgeDirection dir) {
+        if (conduits.size() >= 2) {
+            return true;
+        }
+        if (dir == ForgeDirection.UNKNOWN) {
+            return false;
+        }
+        TileConduitBundle neighbour = getNeighbourBundle(dir);
+        return neighbour != null && neighbour.conduits.size() >= 2;
     }
 
     @Override

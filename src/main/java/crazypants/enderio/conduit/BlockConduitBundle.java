@@ -559,8 +559,15 @@ public class BlockConduitBundle extends BlockEio
             List<IConduit> toBreak = getConduitsToBreak(world, x, y, z, player);
             if (!toBreak.isEmpty()) {
                 for (IConduit con : toBreak) {
-                    te.removeConduit(con);
-                    drop.addAll(con.getDrops());
+                    if (world.isRemote) {
+                        // predict the removal so the piece vanishes at once instead of after a server round trip
+                        if (te instanceof TileConduitBundle) {
+                            ((TileConduitBundle) te).removeConduitClientSide(con);
+                        }
+                    } else {
+                        te.removeConduit(con);
+                        drop.addAll(con.getDrops());
+                    }
                 }
                 ConduitUtil.playBreakSound(Block.soundTypeMetal, world, x, y, z);
             }

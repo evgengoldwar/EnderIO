@@ -493,6 +493,15 @@ public abstract class AbstractConduit implements IConduit {
         }
     }
 
+    /**
+     * The bundle layout changed (e.g. another conduit was added or removed here or next door), so the cached geometry
+     * of this conduit has to be rebuilt. Unlike {@link #connectionsChanged()} this does not trigger a client sync.
+     */
+    public void geometryChanged() {
+        collidablesDirty = true;
+        dodgyChangeSinceLastCallFlagForBundle = true;
+    }
+
     @Override
     public void connectionsChanged() {
         collidablesDirty = true;
