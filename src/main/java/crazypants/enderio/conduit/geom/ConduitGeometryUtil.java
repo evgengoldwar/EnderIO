@@ -12,6 +12,13 @@ import com.enderio.core.common.vecmath.VecmathUtil;
 import com.enderio.core.common.vecmath.Vector3d;
 
 import crazypants.enderio.conduit.IConduit;
+import crazypants.enderio.conduit.gas.IGasConduit;
+import crazypants.enderio.conduit.item.IItemConduit;
+import crazypants.enderio.conduit.liquid.ILiquidConduit;
+import crazypants.enderio.conduit.me.IMEConduit;
+import crazypants.enderio.conduit.oc.IOCConduit;
+import crazypants.enderio.conduit.power.IPowerConduit;
+import crazypants.enderio.conduit.redstone.IRedstoneConduit;
 
 public class ConduitGeometryUtil {
 
@@ -32,6 +39,17 @@ public class ConduitGeometryUtil {
     public static BoundingBox CORE_BOUNDS;
 
     public static final float CONNECTOR_DEPTH = 0.05f;
+
+    /**
+     * Each conduit type is made a tiny bit thinner than the previous one. Conduits of different types that cross or
+     * share a core position then never have coplanar faces, so they render as separate pipes without z-fighting.
+     */
+    public static final float TYPE_INSET_STEP = 0.002f;
+
+    @SuppressWarnings("unchecked")
+    private static final Class<? extends IConduit>[] INSET_ORDER = new Class[] { IRedstoneConduit.class,
+            IPowerConduit.class, ILiquidConduit.class, IItemConduit.class, IGasConduit.class, IMEConduit.class,
+            IOCConduit.class };
 
     private static final Map<ForgeDirection, BoundingBox[]> EXTERNAL_CONNECTOR_BOUNDS = new HashMap<>();
 
@@ -121,6 +139,35 @@ public class ConduitGeometryUtil {
         return EXTERNAL_CONNECTOR_BOUNDS.get(dir);
     }
 
+    public static float getTypeInset(Class<? extends IConduit> type) {
+        if (type != null) {
+            for (int i = 0; i < INSET_ORDER.length; i++) {
+                if (INSET_ORDER[i].isAssignableFrom(type)) {
+                    return i * TYPE_INSET_STEP;
+                }
+            }
+        }
+        return INSET_ORDER.length * TYPE_INSET_STEP;
+    }
+
+    private static BoundingBox getCoreBounds(Class<? extends IConduit> type) {
+        float inset = getTypeInset(type);
+        return new BoundingBox(
+                CORE_BOUNDS.minX + inset,
+                CORE_BOUNDS.minY + inset,
+                CORE_BOUNDS.minZ + inset,
+                CORE_BOUNDS.maxX - inset,
+                CORE_BOUNDS.maxY - inset,
+                CORE_BOUNDS.maxZ - inset);
+    }
+
+    /**
+     * @return the core of a conduit of the given type moved by the given number of conduit widths on each axis
+     */
+    public BoundingBox getCoreBounds(Class<? extends IConduit> type, int xOffset, int yOffset, int zOffset) {
+        return getCoreBounds(type).translate(xOffset * WIDTH, yOffset * WIDTH, zOffset * WIDTH);
+    }
+
     public BoundingBox getBoundingBox(Class<? extends IConduit> type, ForgeDirection dir, boolean isStub,
             Offset offset) {
         GeometryKey key = new GeometryKey(dir, isStub, offset, type);
@@ -168,7 +215,7 @@ public class ConduitGeometryUtil {
 
     private BoundingBox createConduitBounds(Class<? extends IConduit> type, ForgeDirection dir, boolean isStub,
             Offset offset) {
-        BoundingBox bb = CORE_BOUNDS;
+        BoundingBox bb = getCoreBounds(type);
 
         Vector3d min = bb.getMin();
         Vector3d max = bb.getMax();

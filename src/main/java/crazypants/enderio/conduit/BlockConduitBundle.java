@@ -596,8 +596,8 @@ public class BlockConduitBundle extends BlockEio
      * the actual removal, the breaking particles, the crack overlay and the selection highlight, so what the player
      * sees is always what gets broken.
      * <p>
-     * The closest conduit under the cursor wins. Connector boxes (the shared core of several conduits and the external
-     * connector plates) are ignored as long as a conduit can be hit behind them, so a bundle with multiple conduits is
+     * The closest conduit under the cursor wins. Connector boxes (e.g. the external connector plates) are ignored as
+     * long as a conduit can be hit behind them, so a bundle with multiple conduits is
      * always taken apart one conduit at a time. Only if nothing but a connector is hit, the old behaviour applies:
      * conduits without any connection are removed (there is no other way to reach them), or all of them if there are
      * none.

@@ -3,7 +3,6 @@ package crazypants.enderio.conduit;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -49,7 +48,6 @@ import crazypants.enderio.conduit.me.IMEConduit;
 import crazypants.enderio.conduit.oc.IOCConduit;
 import crazypants.enderio.conduit.power.IPowerConduit;
 import crazypants.enderio.conduit.redstone.IRedstoneConduit;
-import crazypants.enderio.conduit.redstone.InsulatedRedstoneConduit;
 import crazypants.enderio.config.Config;
 import crazypants.util.ForgeDirections;
 import li.cil.oc.api.network.Message;
@@ -543,7 +541,6 @@ public class TileConduitBundle extends TileEntityEio implements IConduitBundle {
         return result;
     }
 
-    @SuppressWarnings("unchecked")
     private void addConnectors(List<CollidableComponent> result) {
 
         if (conduits.isEmpty()) {
@@ -563,109 +560,22 @@ public class TileConduitBundle extends TileEntityEio implements IConduitBundle {
 
         cachedConnectors.clear();
 
-        // TODO: What an unholly mess! (and it doesn't even work correctly...)
-        List<CollidableComponent> coreBounds = new ArrayList<>();
+        // Every conduit gets its own core(s). If the arms of a conduit use different offsets (to make room for other
+        // conduits), its cores are linked by joints made from the conduit itself instead of hiding everything in one
+        // big shared connector box. This way each conduit stays visible as a separate pipe.
         for (IConduit con : conduits) {
-            addConduitCores(coreBounds, con);
-        }
-        cachedConnectors.addAll(coreBounds);
-        result.addAll(coreBounds);
-
-        // 1st algorithm
-        List<CollidableComponent> conduitsBounds = new ArrayList<>();
-        for (IConduit con : conduits) {
-            conduitsBounds.addAll(con.getCollidableComponents());
-            addConduitCores(conduitsBounds, con);
-        }
-
-        Set<Class<IConduit>> collidingTypes = new HashSet<>();
-        for (CollidableComponent conCC : conduitsBounds) {
-            for (CollidableComponent innerCC : conduitsBounds) {
-                if (!InsulatedRedstoneConduit.COLOR_CONTROLLER_ID.equals(innerCC.data)
-                        && !InsulatedRedstoneConduit.COLOR_CONTROLLER_ID.equals(conCC.data)
-                        && conCC != innerCC
-                        && conCC.bound.intersects(innerCC.bound)) {
-                    collidingTypes.add((Class<IConduit>) conCC.conduitType);
+            List<CollidableComponent> cores = new ArrayList<>();
+            addConduitCores(cores, con);
+            for (CollidableComponent core : cores) {
+                if (!cachedConnectors.contains(core)) {
+                    cachedConnectors.add(core);
                 }
             }
-        }
-
-        // TODO: Remove the core geometries covered up by this as no point in rendering these
-        if (!collidingTypes.isEmpty()) {
-            List<CollidableComponent> colCores = new ArrayList<>();
-            for (Class<IConduit> c : collidingTypes) {
-                IConduit con = getConduit(c);
-                if (con != null) {
-                    addConduitCores(colCores, con);
+            for (CollidableComponent joint : createCoreJoints(con)) {
+                if (!cachedConnectors.contains(joint)) {
+                    cachedConnectors.add(joint);
                 }
             }
-
-            BoundingBox bb = null;
-            for (CollidableComponent cBB : colCores) {
-                if (bb == null) {
-                    bb = cBB.bound;
-                } else {
-                    bb = bb.expandBy(cBB.bound);
-                }
-            }
-            if (bb != null) {
-                bb = bb.scale(1.05, 1.05, 1.05);
-                CollidableComponent cc = new CollidableComponent(
-                        null,
-                        bb,
-                        ForgeDirection.UNKNOWN,
-                        ConduitConnectorType.INTERNAL);
-                result.add(cc);
-                cachedConnectors.add(cc);
-            }
-        }
-
-        // 2nd algorithm
-        for (IConduit con : conduits) {
-
-            if (con.hasConnections()) {
-                List<CollidableComponent> cores = new ArrayList<>();
-                addConduitCores(cores, con);
-                if (cores.size() > 1) {
-                    BoundingBox bb = cores.get(0).bound;
-                    float area = bb.getArea();
-                    for (CollidableComponent cc : cores) {
-                        bb = bb.expandBy(cc.bound);
-                    }
-                    if (bb.getArea() > area * 1.5f) {
-                        bb = bb.scale(1.05, 1.05, 1.05);
-                        CollidableComponent cc = new CollidableComponent(
-                                null,
-                                bb,
-                                ForgeDirection.UNKNOWN,
-                                ConduitConnectorType.INTERNAL);
-                        result.add(cc);
-                        cachedConnectors.add(cc);
-                    }
-                }
-            }
-        }
-
-        // Merge all internal conduit connectors into one box
-        BoundingBox conBB = null;
-        for (int i = 0; i < result.size(); i++) {
-            CollidableComponent cc = result.get(i);
-            if (cc.conduitType == null && cc.data == ConduitConnectorType.INTERNAL) {
-                conBB = conBB == null ? cc.bound : conBB.expandBy(cc.bound);
-                result.remove(i);
-                i--;
-                cachedConnectors.remove(cc);
-            }
-        }
-
-        if (conBB != null) {
-            CollidableComponent cc = new CollidableComponent(
-                    null,
-                    conBB,
-                    ForgeDirection.UNKNOWN,
-                    ConduitConnectorType.INTERNAL);
-            result.add(cc);
-            cachedConnectors.add(cc);
         }
 
         // External Connectors
@@ -683,11 +593,87 @@ public class TileConduitBundle extends TileEntityEio implements IConduitBundle {
         for (ForgeDirection dir : externalDirs) {
             BoundingBox bb = ConduitGeometryUtil.instance.getExternalConnectorBoundingBox(dir);
             CollidableComponent cc = new CollidableComponent(null, bb, dir, ConduitConnectorType.EXTERNAL);
-            result.add(cc);
             cachedConnectors.add(cc);
         }
+        result.addAll(cachedConnectors);
 
         connectorsDirty = false;
+    }
+
+    /**
+     * Links the different core positions of a conduit (caused by different offsets per axis) with straight segments
+     * of the conduit's own core cells. All cores are connected to the one closest to all others, moving along one
+     * axis at a time, so the result looks like a bent pipe.
+     */
+    private List<CollidableComponent> createCoreJoints(IConduit con) {
+        List<CollidableComponent> result = new ArrayList<>();
+        if (!con.hasConnections()) {
+            return result;
+        }
+        List<Offset> offsets = new ArrayList<>();
+        for (ForgeDirection dir : ForgeDirection.VALID_DIRECTIONS) {
+            if (con.containsConduitConnection(dir) || con.containsExternalConnection(dir)) {
+                Offset offset = getOffset(con.getBaseConduitType(), dir);
+                if (!offsets.contains(offset)) {
+                    offsets.add(offset);
+                }
+            }
+        }
+        if (offsets.size() < 2) {
+            return result;
+        }
+
+        Offset hub = null;
+        int best = Integer.MAX_VALUE;
+        for (Offset candidate : offsets) {
+            int dist = 0;
+            for (Offset other : offsets) {
+                dist += Math.abs(candidate.xOffset - other.xOffset) + Math.abs(candidate.yOffset - other.yOffset)
+                        + Math.abs(candidate.zOffset - other.zOffset);
+            }
+            if (dist < best) {
+                best = dist;
+                hub = candidate;
+            }
+        }
+
+        Class<? extends IConduit> type = con.getCollidableType();
+        Class<? extends IConduit> baseType = con.getBaseConduitType();
+        ConduitGeometryUtil geom = ConduitGeometryUtil.instance;
+        for (Offset target : offsets) {
+            if (target == hub) {
+                continue;
+            }
+            int[] to = { target.xOffset, target.yOffset, target.zOffset };
+            int[] cur = { hub.xOffset, hub.yOffset, hub.zOffset };
+            for (int axis = 0; axis < 3; axis++) {
+                while (cur[axis] != to[axis]) {
+                    cur[axis] += Integer.signum(to[axis] - cur[axis]);
+                    if (isCoreOffset(offsets, cur)) {
+                        continue; // already rendered as a core
+                    }
+                    // one core sized cell per step, so no two boxes of the same conduit overlap (no z-fighting)
+                    CollidableComponent joint = new CollidableComponent(
+                            type,
+                            geom.getCoreBounds(baseType, cur[0], cur[1], cur[2]),
+                            ForgeDirection.UNKNOWN,
+                            null);
+                    if (!result.contains(joint)) {
+                        result.add(joint);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    private static boolean isCoreOffset(List<Offset> offsets, int[] pos) {
+        for (Offset offset : offsets) {
+            if (offset.xOffset == pos[0] && offset.yOffset == pos[1] && offset.zOffset == pos[2]) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void addConduitCores(List<CollidableComponent> result, IConduit con) {
