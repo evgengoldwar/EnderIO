@@ -23,7 +23,6 @@ import com.enderio.core.client.render.CubeRenderer;
 import com.enderio.core.client.render.IconUtil;
 import com.enderio.core.common.util.BlockCoord;
 import com.enderio.core.common.util.IBlockAccessWrapper;
-import com.google.common.collect.Lists;
 import com.gtnewhorizons.angelica.api.ThreadSafeISBRH;
 
 import cpw.mods.fml.client.registry.ISimpleBlockRenderingHandler;
@@ -37,7 +36,6 @@ import crazypants.enderio.conduit.ConnectionMode;
 import crazypants.enderio.conduit.IConduit;
 import crazypants.enderio.conduit.IConduitBundle;
 import crazypants.enderio.conduit.IConduitBundle.FacadeRenderState;
-import crazypants.enderio.conduit.RaytraceResult;
 import crazypants.enderio.conduit.TileConduitBundle;
 import crazypants.enderio.conduit.facade.BlockConduitFacade;
 import crazypants.enderio.conduit.geom.CollidableComponent;
@@ -167,6 +165,13 @@ public class ConduitBundleRenderer implements ISimpleBlockRenderingHandler {
         tessellator.setColorOpaque_F(1, 1, 1);
         tessellator.addTranslation((float) x, (float) y, (float) z);
 
+        if (rb.hasOverrideBlockTexture()) {
+            // "block breaking" crack overlay
+            renderBreakingOverlay(bundle, x, y, z, rb.overrideBlockTexture);
+            tessellator.addTranslation(-(float) x, -(float) y, -(float) z);
+            return;
+        }
+
         // Conduits
         Set<ForgeDirection> externals = new HashSet<>();
         EntityClientPlayerMP player = Minecraft.getMinecraft().thePlayer;
@@ -195,39 +200,20 @@ public class ConduitBundleRenderer implements ISimpleBlockRenderingHandler {
 
         // Internal conectors between conduits
         List<CollidableComponent> connectors = bundle.getConnectors();
-        List<CollidableComponent> rendered = Lists.newArrayList();
         for (int i = 0; i < connectors.size(); i++) {
             final CollidableComponent component = connectors.get(i);
             if (component.conduitType != null) {
                 IConduit conduit = bundle.getConduit(component.conduitType);
                 if (conduit != null) {
                     if (ConduitUtil.renderConduit(player, component.conduitType)) {
-                        if (rb.hasOverrideBlockTexture()) {
-                            List<RaytraceResult> results = EnderIO.blockConduitBundle.doRayTraceAll(
-                                    bundle.getWorld(),
-                                    MathHelper.floor_double(x),
-                                    MathHelper.floor_double(y),
-                                    MathHelper.floor_double(z),
-                                    EnderIO.proxy.getClientPlayer());
-                            for (RaytraceResult r : results) {
-                                // the connectors can be rendered multiple times and this makes the break texture look
-                                // funky
-                                if (r.component.conduitType == component.conduitType
-                                        && !rendered.contains(r.component)) {
-                                    rendered.add(r.component);
-                                    cr.render(component.bound, rb.overrideBlockTexture, true);
-                                }
-                            }
-                        } else {
-                            tessellator.setBrightness((int) (brightness));
-                            cr.render(component.bound, conduit.getTextureForState(component), true);
-                        }
+                        tessellator.setBrightness((int) (brightness));
+                        cr.render(component.bound, conduit.getTextureForState(component), true);
                     } else {
                         wireBounds.add(component.bound);
                     }
                 }
 
-            } else if (ConduitUtil.getDisplayMode(player) == ConduitDisplayMode.ALL && !rb.hasOverrideBlockTexture()) {
+            } else if (ConduitUtil.getDisplayMode(player) == ConduitDisplayMode.ALL) {
                 IIcon tex = EnderIO.blockConduitBundle.getConnectorIcon(component.data);
                 cr.render(component.bound, tex);
             }
@@ -242,12 +228,42 @@ public class ConduitBundleRenderer implements ISimpleBlockRenderingHandler {
 
         tessellator.setColorRGBA_F(1, 1, 1, 1f);
         // External connection terminations
-        if (rb.overrideBlockTexture == null) {
-            for (ForgeDirection dir : externals) {
-                renderExternalConnection(dir);
-            }
+        for (ForgeDirection dir : externals) {
+            renderExternalConnection(dir);
         }
         tessellator.addTranslation(-(float) x, -(float) y, -(float) z);
+    }
+
+    /**
+     * Renders the crack texture only on the conduit that is actually going to be broken, using the same targeting as
+     * {@link BlockConduitBundle#getConduitsToBreak}. If the local player is not targeting anything here (e.g. another
+     * player is breaking the block) all visible conduits get the overlay.
+     */
+    private void renderBreakingOverlay(IConduitBundle bundle, double x, double y, double z, IIcon crack) {
+        EntityClientPlayerMP player = Minecraft.getMinecraft().thePlayer;
+        List<IConduit> targets = EnderIO.blockConduitBundle.getConduitsToBreak(
+                bundle.getWorld(),
+                MathHelper.floor_double(x),
+                MathHelper.floor_double(y),
+                MathHelper.floor_double(z),
+                player);
+        if (targets.isEmpty()) {
+            for (IConduit con : bundle.getConduits()) {
+                if (ConduitUtil.renderConduit(player, con)) {
+                    targets.add(con);
+                }
+            }
+        }
+        // overlapping boxes would draw the crack twice, which looks funky
+        Set<BoundingBox> rendered = new HashSet<>();
+        final CubeRenderer cr = CubeRenderer.get();
+        for (IConduit con : targets) {
+            for (CollidableComponent component : BlockConduitBundle.getComponentsOf(bundle, con)) {
+                if (rendered.add(component.bound)) {
+                    cr.render(component.bound, crack, true);
+                }
+            }
+        }
     }
 
     private void renderExternalConnection(ForgeDirection dir) {

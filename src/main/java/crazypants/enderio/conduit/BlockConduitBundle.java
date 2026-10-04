@@ -11,6 +11,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.ISound;
 import net.minecraft.client.particle.EffectRenderer;
 import net.minecraft.client.particle.EntityDiggingFX;
+import net.minecraft.client.renderer.OpenGlHelper;
+import net.minecraft.client.renderer.RenderGlobal;
 import net.minecraft.client.renderer.texture.IIconRegister;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.EntityPlayer;
@@ -22,11 +24,14 @@ import net.minecraft.util.MovingObjectPosition;
 import net.minecraft.util.Vec3;
 import net.minecraft.world.IBlockAccess;
 import net.minecraft.world.World;
+import net.minecraftforge.client.event.DrawBlockHighlightEvent;
 import net.minecraftforge.client.event.sound.PlaySoundSourceEvent;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.util.ForgeDirection;
 import net.minecraftforge.event.entity.PlaySoundAtEntityEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent.BreakSpeed;
+
+import org.lwjgl.opengl.GL11;
 
 import com.enderio.core.client.render.BoundingBox;
 import com.enderio.core.common.util.BlockCoord;
@@ -164,8 +169,6 @@ public class BlockConduitBundle extends BlockEio
 
     private IIcon connectorIcon, connectorIconExternal;
 
-    private IIcon lastRemovedComponetIcon = null;
-
     private final Random rand = new Random();
 
     protected BlockConduitBundle() {
@@ -195,29 +198,37 @@ public class BlockConduitBundle extends BlockEio
             return true;
         }
 
-        IIcon tex = null;
-
         TileEntity cbe = world.getTileEntity(target.blockX, target.blockY, target.blockZ);
         if (!(cbe instanceof TileConduitBundle)) {
             return false;
         }
         TileConduitBundle cb = (TileConduitBundle) cbe;
+
+        IIcon tex = null;
+        BoundingBox bound = BoundingBox.UNIT_CUBE;
         if (ConduitUtil.isSolidFacadeRendered(cb, Minecraft.getMinecraft().thePlayer)) {
             if (cb.getFacadeId() != null) {
                 tex = cb.getFacadeId().getIcon(target.sideHit, cb.getFacadeMetadata());
             }
         } else if (target.hitInfo instanceof CollidableComponent) {
             CollidableComponent cc = (CollidableComponent) target.hitInfo;
+            if (cc.bound != null) {
+                bound = cc.bound;
+            }
             IConduit con = cb.getConduit(cc.conduitType);
             if (con != null) {
                 tex = con.getTextureForState(cc);
             }
         }
-        if (tex == null) {
-            tex = blockIcon;
-        }
-        lastRemovedComponetIcon = tex;
-        addBlockHitEffects(world, effectRenderer, target.blockX, target.blockY, target.blockZ, target.sideHit, tex);
+        addBlockHitEffects(
+                world,
+                effectRenderer,
+                target.blockX,
+                target.blockY,
+                target.blockZ,
+                target.sideHit,
+                bound,
+                tex == null ? blockIcon : tex);
         return true;
     }
 
@@ -228,62 +239,114 @@ public class BlockConduitBundle extends BlockEio
             return true;
         }
 
-        IIcon tex = lastRemovedComponetIcon;
-        byte b0 = 4;
-        for (int j1 = 0; j1 < b0; ++j1) {
-            for (int k1 = 0; k1 < b0; ++k1) {
-                for (int l1 = 0; l1 < b0; ++l1) {
-                    double d0 = x + (j1 + 0.5D) / b0;
-                    double d1 = y + (k1 + 0.5D) / b0;
-                    double d2 = z + (l1 + 0.5D) / b0;
-                    int i2 = rand.nextInt(6);
-                    EntityDiggingFX fx = new EntityDiggingFX(
-                            world,
-                            d0,
-                            d1,
-                            d2,
-                            d0 - x - 0.5D,
-                            d1 - y - 0.5D,
-                            d2 - z - 0.5D,
-                            this,
-                            i2,
-                            0).applyColourMultiplier(x, y, z);
-                    fx.setParticleIcon(tex);
-                    effectRenderer.addEffect(fx);
-                }
+        TileEntity tile = world.getTileEntity(x, y, z);
+        if (!(tile instanceof TileConduitBundle)) {
+            // nothing left to look at, fall back to a small puff in the center
+            addDestroyEffects(world, effectRenderer, x, y, z, BoundingBox.UNIT_CUBE.scale(0.33, 0.33, 0.33), blockIcon);
+            return true;
+        }
+        TileConduitBundle cb = (TileConduitBundle) tile;
+        EntityPlayer player = Minecraft.getMinecraft().thePlayer;
+
+        // This is called right before the block/conduit is actually removed, so we can still see what will go away
+        if (ConduitUtil.isSolidFacadeRendered(cb, player)) {
+            Block facade = cb.getFacadeId();
+            addDestroyEffects(
+                    world,
+                    effectRenderer,
+                    x,
+                    y,
+                    z,
+                    BoundingBox.UNIT_CUBE,
+                    facade.getIcon(rand.nextInt(6), cb.getFacadeMetadata()));
+            return true;
+        }
+
+        List<IConduit> broken = getConduitsToBreak(world, x, y, z, player);
+        if (broken.isEmpty()) {
+            // Most likely someone else broke it, we don't know which conduit so show all of them
+            broken = new ArrayList<>(cb.getConduits());
+        }
+        boolean spawned = false;
+        for (IConduit con : broken) {
+            for (CollidableComponent cc : getComponentsOf(cb, con)) {
+                IIcon tex = con.getTextureForState(cc);
+                addDestroyEffects(world, effectRenderer, x, y, z, cc.bound, tex == null ? blockIcon : tex);
+                spawned = true;
             }
+        }
+        if (!spawned) {
+            addDestroyEffects(world, effectRenderer, x, y, z, BoundingBox.UNIT_CUBE.scale(0.33, 0.33, 0.33), blockIcon);
         }
         return true;
     }
 
+    /**
+     * Spawns breaking particles filling the given box (block relative coordinates) instead of the whole block.
+     */
+    @SideOnly(Side.CLIENT)
+    private void addDestroyEffects(World world, EffectRenderer effectRenderer, int x, int y, int z, BoundingBox bb,
+            IIcon tex) {
+        final double density = 8;
+        int nx = Math.max(1, (int) Math.round((bb.maxX - bb.minX) * density));
+        int ny = Math.max(1, (int) Math.round((bb.maxY - bb.minY) * density));
+        int nz = Math.max(1, (int) Math.round((bb.maxZ - bb.minZ) * density));
+        double cx = (bb.minX + bb.maxX) / 2;
+        double cy = (bb.minY + bb.maxY) / 2;
+        double cz = (bb.minZ + bb.maxZ) / 2;
+        for (int i = 0; i < nx; ++i) {
+            for (int j = 0; j < ny; ++j) {
+                for (int k = 0; k < nz; ++k) {
+                    double px = bb.minX + (i + 0.5D) * (bb.maxX - bb.minX) / nx;
+                    double py = bb.minY + (j + 0.5D) * (bb.maxY - bb.minY) / ny;
+                    double pz = bb.minZ + (k + 0.5D) * (bb.maxZ - bb.minZ) / nz;
+                    EntityDiggingFX fx = new EntityDiggingFX(
+                            world,
+                            x + px,
+                            y + py,
+                            z + pz,
+                            (px - cx) * 2 + (rand.nextDouble() - 0.5D) * 0.2D,
+                            (py - cy) * 2 + rand.nextDouble() * 0.2D,
+                            (pz - cz) * 2 + (rand.nextDouble() - 0.5D) * 0.2D,
+                            this,
+                            rand.nextInt(6),
+                            0).applyColourMultiplier(x, y, z);
+                    fx.setParticleIcon(tex);
+                    fx.multipleParticleScaleBy(0.7F);
+                    effectRenderer.addEffect(fx);
+                }
+            }
+        }
+    }
+
+    /**
+     * Spawns a hit particle on the face of the box (block relative coordinates) that is being hit.
+     */
     @SideOnly(Side.CLIENT)
     private void addBlockHitEffects(World world, EffectRenderer effectRenderer, int x, int y, int z, int side,
-            IIcon tex) {
-        float f = 0.1F;
-        double d0 = x + rand.nextDouble() * (getBlockBoundsMaxX() - getBlockBoundsMinX() - f * 2.0F)
-                + f
-                + getBlockBoundsMinX();
-        double d1 = y + rand.nextDouble() * (getBlockBoundsMaxY() - getBlockBoundsMinY() - f * 2.0F)
-                + f
-                + getBlockBoundsMinY();
-        double d2 = z + rand.nextDouble() * (getBlockBoundsMaxZ() - getBlockBoundsMinZ() - f * 2.0F)
-                + f
-                + getBlockBoundsMinZ();
+            BoundingBox bb, IIcon tex) {
+        final double f = 0.05;
+        double insetX = Math.min(f, (bb.maxX - bb.minX) / 4);
+        double insetY = Math.min(f, (bb.maxY - bb.minY) / 4);
+        double insetZ = Math.min(f, (bb.maxZ - bb.minZ) / 4);
+        double d0 = x + bb.minX + insetX + rand.nextDouble() * (bb.maxX - bb.minX - insetX * 2);
+        double d1 = y + bb.minY + insetY + rand.nextDouble() * (bb.maxY - bb.minY - insetY * 2);
+        double d2 = z + bb.minZ + insetZ + rand.nextDouble() * (bb.maxZ - bb.minZ - insetZ * 2);
         if (side == 0) {
-            d1 = y + getBlockBoundsMinY() - f;
+            d1 = y + bb.minY - f;
         } else if (side == 1) {
-            d1 = y + getBlockBoundsMaxY() + f;
+            d1 = y + bb.maxY + f;
         } else if (side == 2) {
-            d2 = z + getBlockBoundsMinZ() - f;
+            d2 = z + bb.minZ - f;
         } else if (side == 3) {
-            d2 = z + getBlockBoundsMaxZ() + f;
+            d2 = z + bb.maxZ + f;
         } else if (side == 4) {
-            d0 = x + getBlockBoundsMinX() - f;
+            d0 = x + bb.minX - f;
         } else if (side == 5) {
-            d0 = x + getBlockBoundsMaxX() + f;
+            d0 = x + bb.maxX + f;
         }
         EntityDiggingFX digFX = new EntityDiggingFX(world, d0, d1, d2, 0.0D, 0.0D, 0.0D, this, side, 0);
-        digFX.applyColourMultiplier(x, y, z).multiplyVelocity(0.2F).multipleParticleScaleBy(0.6F);
+        digFX.applyColourMultiplier(x, y, z).multiplyVelocity(0.2F).multipleParticleScaleBy(0.5F);
         digFX.setParticleIcon(tex);
         effectRenderer.addEffect(digFX);
     }
@@ -493,12 +556,13 @@ public class BlockConduitBundle extends BlockEio
         }
 
         if (breakBlock) {
-            List<RaytraceResult> results = doRayTraceAll(world, x, y, z, player);
-            RaytraceResult.sort(Util.getEyePosition(player), results);
-            for (RaytraceResult rt : results) {
-                if (breakConduit(te, drop, rt, player)) {
-                    break;
+            List<IConduit> toBreak = getConduitsToBreak(world, x, y, z, player);
+            if (!toBreak.isEmpty()) {
+                for (IConduit con : toBreak) {
+                    te.removeConduit(con);
+                    drop.addAll(con.getDrops());
                 }
+                ConduitUtil.playBreakSound(Block.soundTypeMetal, world, x, y, z);
             }
         }
 
@@ -509,7 +573,8 @@ public class BlockConduitBundle extends BlockEio
         }
 
         // TODO no microblock sounds...not sure if fixable, need to contact immibis
-        if (MicroblocksUtil.supportMicroblocks()) {
+        // Microblocks only drop when the whole block goes away, otherwise they would be duplicated
+        if (breakBlock && MicroblocksUtil.supportMicroblocks()) {
             IM__getDrops(drop, world, x, y, z, te.getEntity().getBlockMetadata(), 0);
         }
 
@@ -526,49 +591,84 @@ public class BlockConduitBundle extends BlockEio
         return false;
     }
 
-    private boolean breakConduit(IConduitBundle te, List<ItemStack> drop, RaytraceResult rt, EntityPlayer player) {
-        if (rt == null || rt.component == null) {
-            return false;
+    /**
+     * Determines which conduits the player would remove by breaking the bundle right now. The same logic is used for
+     * the actual removal, the breaking particles, the crack overlay and the selection highlight, so what the player
+     * sees is always what gets broken.
+     * <p>
+     * The closest conduit under the cursor wins. Connector boxes (the shared core of several conduits and the external
+     * connector plates) are ignored as long as a conduit can be hit behind them, so a bundle with multiple conduits is
+     * always taken apart one conduit at a time. Only if nothing but a connector is hit, the old behaviour applies:
+     * conduits without any connection are removed (there is no other way to reach them), or all of them if there are
+     * none.
+     *
+     * @return the conduits to remove, an empty list if the solid facade is targeted or nothing is hit
+     */
+    public List<IConduit> getConduitsToBreak(World world, int x, int y, int z, EntityPlayer player) {
+        TileEntity tile = world.getTileEntity(x, y, z);
+        if (!(tile instanceof IConduitBundle)) {
+            return new ArrayList<>();
         }
-        Class<? extends IConduit> type = rt.component.conduitType;
-        if (!ConduitUtil.renderConduit(player, type)) {
-            return false;
+        IConduitBundle te = (IConduitBundle) tile;
+        List<IConduit> result = new ArrayList<>();
+        if (ConduitUtil.isSolidFacadeRendered(te, player)) {
+            return result;
         }
 
-        if (type == null) {
-            // broke a conector so drop any conduits with no connections as there
-            // is no other way to remove these
+        List<RaytraceResult> results = doRayTraceAll(world, x, y, z, player);
+        if (results == null || results.isEmpty()) {
+            return result;
+        }
+        RaytraceResult.sort(Util.getEyePosition(player), results);
+
+        boolean connectorHit = false;
+        for (RaytraceResult rt : results) {
+            if (rt.component == null) {
+                continue;
+            }
+            Class<? extends IConduit> type = rt.component.conduitType;
+            if (type == null) {
+                connectorHit = true;
+                continue;
+            }
+            IConduit con = te.getConduit(type);
+            if (con != null && ConduitUtil.renderConduit(player, type)) {
+                result.add(con);
+                return result;
+            }
+        }
+
+        if (connectorHit) {
             List<IConduit> cons = new ArrayList<>(te.getConduits());
-            boolean droppedUnconected = false;
             for (IConduit con : cons) {
                 if (con.getConduitConnections().isEmpty() && con.getExternalConnections().isEmpty()
                         && ConduitUtil.renderConduit(player, con)) {
-                    te.removeConduit(con);
-                    drop.addAll(con.getDrops());
-                    droppedUnconected = true;
+                    result.add(con);
                 }
             }
-            // If there isn't, then drop em all
-            if (!droppedUnconected) {
+            if (result.isEmpty()) {
                 for (IConduit con : cons) {
                     if (ConduitUtil.renderConduit(player, con)) {
-                        te.removeConduit(con);
-                        drop.addAll(con.getDrops());
+                        result.add(con);
                     }
                 }
             }
-        } else {
-            IConduit con = te.getConduit(type);
-            if (con != null) {
-                te.removeConduit(con);
-                drop.addAll(con.getDrops());
+        }
+        return result;
+    }
+
+    /**
+     * @return all collidable components (arms, core, connectors) that belong to the given conduit
+     */
+    public static List<CollidableComponent> getComponentsOf(IConduitBundle bundle, IConduit con) {
+        List<CollidableComponent> result = new ArrayList<>();
+        Class<? extends IConduit> type = con.getCollidableType();
+        for (CollidableComponent cc : bundle.getCollidableComponents()) {
+            if (cc.conduitType == type && cc.bound != null && !result.contains(cc)) {
+                result.add(cc);
             }
         }
-
-        BlockCoord bc = te.getLocation();
-        ConduitUtil.playBreakSound(Block.soundTypeMetal, te.getWorld(), bc.x, bc.y, bc.z);
-
-        return true;
+        return result;
     }
 
     @Override
@@ -1254,6 +1354,74 @@ public class BlockConduitBundle extends BlockEio
                     ConduitUtil.playStepSound(Block.soundTypeMetal, world, bc.x, bc.y, bc.z);
                 }
             }
+        }
+
+        /**
+         * Outlines every part of the conduit that would be broken instead of only the single segment under the cursor.
+         * This makes it obvious which conduit is targeted in a crowded bundle.
+         */
+        @SideOnly(Side.CLIENT)
+        @SubscribeEvent
+        public void onDrawBlockHighlight(DrawBlockHighlightEvent event) {
+            MovingObjectPosition target = event.target;
+            if (target == null || target.typeOfHit != MovingObjectPosition.MovingObjectType.BLOCK
+                    || event.subID != 0
+                    || !(target.hitInfo instanceof CollidableComponent)) {
+                return;
+            }
+            EntityPlayer player = event.player;
+            World world = player.worldObj;
+            int x = target.blockX, y = target.blockY, z = target.blockZ;
+            if (world.getBlock(x, y, z) != BlockConduitBundle.this) {
+                return;
+            }
+            TileEntity te = world.getTileEntity(x, y, z);
+            if (!(te instanceof IConduitBundle)) {
+                return;
+            }
+            IConduitBundle bundle = (IConduitBundle) te;
+            CollidableComponent hit = (CollidableComponent) target.hitInfo;
+            if (hit.conduitType == null || InsulatedRedstoneConduit.COLOR_CONTROLLER_ID.equals(hit.data)
+                    || ConduitUtil.isSolidFacadeRendered(bundle, player)) {
+                // facades, external connectors and the color controller keep the normal single box
+                return;
+            }
+            List<IConduit> targets = getConduitsToBreak(world, x, y, z, player);
+            if (targets.size() != 1) {
+                return;
+            }
+            List<CollidableComponent> components = getComponentsOf(bundle, targets.get(0));
+            if (components.isEmpty()) {
+                return;
+            }
+
+            double dx = player.lastTickPosX + (player.posX - player.lastTickPosX) * event.partialTicks;
+            double dy = player.lastTickPosY + (player.posY - player.lastTickPosY) * event.partialTicks;
+            double dz = player.lastTickPosZ + (player.posZ - player.lastTickPosZ) * event.partialTicks;
+            final double grow = 0.002;
+
+            GL11.glEnable(GL11.GL_BLEND);
+            OpenGlHelper.glBlendFunc(770, 771, 1, 0);
+            GL11.glColor4f(0.0F, 0.0F, 0.0F, 0.4F);
+            GL11.glLineWidth(2.0F);
+            GL11.glDisable(GL11.GL_TEXTURE_2D);
+            GL11.glDepthMask(false);
+            for (CollidableComponent cc : components) {
+                BoundingBox bb = cc.bound;
+                RenderGlobal.drawOutlinedBoundingBox(
+                        AxisAlignedBB.getBoundingBox(
+                                x + bb.minX - grow - dx,
+                                y + bb.minY - grow - dy,
+                                z + bb.minZ - grow - dz,
+                                x + bb.maxX + grow - dx,
+                                y + bb.maxY + grow - dy,
+                                z + bb.maxZ + grow - dz),
+                        -1);
+            }
+            GL11.glDepthMask(true);
+            GL11.glEnable(GL11.GL_TEXTURE_2D);
+            GL11.glDisable(GL11.GL_BLEND);
+            event.setCanceled(true);
         }
 
         @SubscribeEvent
