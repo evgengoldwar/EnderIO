@@ -9,6 +9,7 @@ import net.minecraft.inventory.Slot;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.crafting.CraftingManager;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraftforge.oredict.OreDictionary;
 
 import com.enderio.core.common.util.ItemUtil;
 
@@ -49,11 +50,30 @@ public class StoredCraftingRecipe {
         for (int slotIdx = 0; slotIdx < 9; slotIdx++) {
             ItemStack a = slots[slotIdx];
             ItemStack b = craftingGrid.get(slotIdx).getStack();
-            if ((a != null || b != null) && !ItemUtil.areStacksEqual(a, b)) {
+            if ((a != null || b != null) && !ItemUtil.areStacksEqual(a, b) && !isIngredientCompatible(a, b)) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * Checks if an item can be used in place of a recipe ingredient. Non-stackable items (tools, e.g. GregTech tools)
+     * store their material and durability in NBT, so for them only the item and meta are compared.
+     */
+    public static boolean isIngredientCompatible(ItemStack ingredient, ItemStack stack) {
+        if (ingredient == null || stack == null) {
+            return false;
+        }
+        if (ItemUtil.areStackMergable(stack, ingredient)) {
+            return true;
+        }
+        if (ingredient.getItem() != stack.getItem() || ingredient.isStackable() || stack.isStackable()) {
+            return false;
+        }
+        int meta = ingredient.getItemDamage();
+        return meta == OreDictionary.WILDCARD_VALUE || ingredient.getItem().isDamageable()
+                || meta == stack.getItemDamage();
     }
 
     public void writeToNBT(NBTTagCompound nbtRoot) {

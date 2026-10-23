@@ -330,7 +330,11 @@ public class NetworkedInventory {
                 return 0;
             }
         }
-        return ItemUtil.doInsertItem(getInventory(), item, ForgeDirections.DIRECTIONS[inventorySide]);
+        int inserted = ItemUtil.doInsertItem(getInventory(), item, ForgeDirections.DIRECTIONS[inventorySide]);
+        if (inserted > 0 && con.hasInventoryPanelUpgrade(conDir)) {
+            network.inventoryPanelSourceFilled(this);
+        }
+        return inserted;
     }
 
     void updateInsertOrder() {

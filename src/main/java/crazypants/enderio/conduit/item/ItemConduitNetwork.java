@@ -120,6 +120,12 @@ public class ItemConduitNetwork extends AbstractConduitNetwork<IItemConduit, IIt
         changeCount++;
     }
 
+    void inventoryPanelSourceFilled(NetworkedInventory inv) {
+        if (database != null) {
+            database.inventoryChanged(inv);
+        }
+    }
+
     public int getChangeCount() {
         return changeCount;
     }

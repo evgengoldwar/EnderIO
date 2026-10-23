@@ -7,8 +7,6 @@ import java.util.List;
 import net.minecraft.inventory.Slot;
 import net.minecraft.item.ItemStack;
 
-import com.enderio.core.common.util.ItemUtil;
-
 import crazypants.enderio.machine.invpanel.GuiInventoryPanel;
 import crazypants.enderio.machine.invpanel.InventoryPanelContainer;
 import crazypants.enderio.machine.invpanel.PacketFetchItem;
@@ -104,8 +102,8 @@ public class CraftingHelper {
                     Slot slot = craftingGrid.get(idx);
                     int current = getSlotStackSize(slot);
                     int maxStackSize = candidate.stack.getMaxStackSize();
-                    currentAmount = Math.max(currentAmount, current);
                     if (candidate.stack.isStackable() && maxStackSize > 1) {
+                        currentAmount = Math.max(currentAmount, current);
                         targetAmount = Math
                                 .min(targetAmount, current + Math.min(maxStackSize, candidate.getAvailable()));
                     }
@@ -118,31 +116,33 @@ public class CraftingHelper {
                 Candidate candidate = candidates[idx];
                 if (candidate != null) {
                     Slot slot = craftingGrid.get(idx);
+                    // tools and other non-stackable items only need a single item in the grid
+                    int slotTarget = Math.min(targetAmount, Math.max(1, candidate.stack.getMaxStackSize()));
                     for (Slot srcSlot : candidate.sourceSlots) {
                         int current = getSlotStackSize(slot);
-                        if (current >= targetAmount) {
+                        if (current >= slotTarget) {
                             break;
                         }
                         if (container.moveItems(
                                 srcSlot.slotNumber,
                                 slot.slotNumber,
                                 slot.slotNumber + 1,
-                                targetAmount - current)) {
+                                slotTarget - current)) {
                             slotsToProcess &= ~mask;
                             madeProgress = true;
                         }
                     }
                     int current = getSlotStackSize(slot);
                     if (candidate.entry != null) {
-                        if (current < targetAmount) {
-                            int toMove = Math.min(candidate.entry.getCount(), targetAmount - current);
+                        if (current < slotTarget) {
+                            int toMove = Math.min(candidate.entry.getCount(), slotTarget - current);
                             PacketHandler.INSTANCE.sendToServer(
                                     new PacketFetchItem(db.getGeneration(), candidate.entry, slot.slotNumber, toMove));
                             slotsToProcess &= ~mask;
                             current += toMove;
                         }
                     }
-                    if (current > 0) {
+                    if (current > 0 && candidate.stack.isStackable()) {
                         maxAmount = Math.min(maxAmount, current);
                     }
                 }
@@ -157,7 +157,7 @@ public class CraftingHelper {
 
     private static boolean isStackCompatible(ItemStack[] pstack, ItemStack stack) {
         for (ItemStack istack : pstack) {
-            if (ItemUtil.areStackMergable(stack, istack)) {
+            if (StoredCraftingRecipe.isIngredientCompatible(istack, stack)) {
                 return true;
             }
         }
@@ -191,7 +191,7 @@ public class CraftingHelper {
     private Candidate findCandidates(ItemStack stack, GuiInventoryPanel gui, InventoryDatabaseClient db,
             Candidate[] candidates) {
         for (Candidate candidate : candidates) {
-            if (candidate != null && ItemUtil.areStackMergable(candidate.stack, stack)) {
+            if (candidate != null && StoredCraftingRecipe.isIngredientCompatible(candidate.stack, stack)) {
                 return candidate;
             }
         }
@@ -207,6 +207,9 @@ public class CraftingHelper {
             if (candidate.entry != null && candidate.entry.getCount() <= 0) {
                 candidate.entry = null;
             }
+            if (candidate.entry == null && !stack.isStackable()) {
+                candidate.entry = db.findCompatibleItem(stack);
+            }
         }
         return candidate;
     }
@@ -214,7 +217,7 @@ public class CraftingHelper {
     private void findCandidates(Candidate candidates, ItemStack stack, Collection<Slot> slots) {
         for (Slot slot : slots) {
             ItemStack slotStack = slot.getStack();
-            if (slotStack != null && ItemUtil.areStackMergable(slotStack, stack)) {
+            if (slotStack != null && StoredCraftingRecipe.isIngredientCompatible(stack, slotStack)) {
                 candidates.sourceSlots.add(slot);
                 candidates.available += slotStack.stackSize;
             }

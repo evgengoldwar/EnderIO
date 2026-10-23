@@ -96,19 +96,30 @@ public class InventoryPanelContainer extends AbstractMachineContainer<TileInvent
                             if (!itemstack.getItem().hasContainerItem(itemstack)) continue;
 
                             ItemStack containerIS = itemstack.getItem().getContainerItem(itemstack);
-                            if (containerIS != null && containerIS.isItemStackDamageable()
+                            if (containerIS == null) {
+                                // e.g. a GregTech tool that broke during this craft
+                                continue;
+                            }
+                            if (containerIS.isItemStackDamageable()
                                     && containerIS.getItemDamage() > containerIS.getMaxDamage()) {
                                 MinecraftForge.EVENT_BUS.post(new PlayerDestroyItemEvent(player, containerIS));
+                                continue;
+                            }
+
+                            // Tools (e.g. GregTech tools) return a damaged copy of themselves. Keep them in the
+                            // grid so the recipe can be crafted again right away.
+                            boolean keepInGrid = !itemstack.getItem().doesContainerItemLeaveCraftingGrid(itemstack)
+                                    || containerIS.getItem() == itemstack.getItem();
+                            if (keepInGrid && getInv().getStackInSlot(i) == null) {
+                                getInv().setInventorySlotContents(i, containerIS);
+                                continue;
+                            }
+                            if (insertIntoReturnArea(containerIS)) continue;
+                            if (player.inventory.addItemStackToInventory(containerIS)) continue;
+                            if (getInv().getStackInSlot(i) == null) {
+                                getInv().setInventorySlotContents(i, containerIS);
                             } else {
-                                if (itemstack.getItem().doesContainerItemLeaveCraftingGrid(itemstack)) {
-                                    if (ItemUtil.doInsertItem(getInv(), 10, 20, itemstack) > 0) continue;
-                                    if (player.inventory.addItemStackToInventory(containerIS)) continue;
-                                }
-                                if (getInv().getStackInSlot(i) == null) {
-                                    getInv().setInventorySlotContents(i, containerIS);
-                                } else {
-                                    player.dropPlayerItemWithRandomChoice(containerIS, false);
-                                }
+                                player.dropPlayerItemWithRandomChoice(containerIS, false);
                             }
                         }
                     }
@@ -147,6 +158,40 @@ public class InventoryPanelContainer extends AbstractMachineContainer<TileInvent
             }
         }
         endSlotReturn = inventorySlots.size();
+    }
+
+    /**
+     * Inserts the stack into the return area of the inventory panel.
+     *
+     * @return true if the whole stack was inserted
+     */
+    private boolean insertIntoReturnArea(ItemStack stack) {
+        IInventory inv = getInv();
+        int end = TileInventoryPanel.SLOT_RETURN_START + 10;
+        int limit = Math.min(stack.getMaxStackSize(), inv.getInventoryStackLimit());
+        for (int i = TileInventoryPanel.SLOT_RETURN_START; i < end && stack.stackSize > 0; i++) {
+            ItemStack target = inv.getStackInSlot(i);
+            if (target != null && target.stackSize < limit && ItemUtil.areStackMergable(target, stack)) {
+                int toMove = Math.min(stack.stackSize, limit - target.stackSize);
+                ItemStack merged = target.copy();
+                merged.stackSize += toMove;
+                inv.setInventorySlotContents(i, merged);
+                stack.stackSize -= toMove;
+            }
+        }
+        for (int i = TileInventoryPanel.SLOT_RETURN_START; i < end && stack.stackSize > 0; i++) {
+            if (inv.getStackInSlot(i) == null) {
+                ItemStack toPlace = stack.copy();
+                toPlace.stackSize = Math.min(stack.stackSize, limit);
+                inv.setInventorySlotContents(i, toPlace);
+                stack.stackSize -= toPlace.stackSize;
+            }
+        }
+        if (stack.stackSize < 0) {
+            stack.stackSize = 0;
+        }
+        updateReturnAreaSlots = true;
+        return stack.stackSize == 0;
     }
 
     public void createGhostSlots(List<GhostSlot> slots) {

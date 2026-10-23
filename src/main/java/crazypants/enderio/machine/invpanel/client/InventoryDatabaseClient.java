@@ -5,12 +5,14 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 
+import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.CompressedStreamTools;
 import net.minecraft.nbt.NBTTagCompound;
 
 import com.enderio.core.common.network.CompressedDataInput;
 
 import crazypants.enderio.machine.invpanel.InventoryDatabase;
+import crazypants.enderio.machine.invpanel.StoredCraftingRecipe;
 
 public class InventoryDatabaseClient extends InventoryDatabase<ItemEntry> {
 
@@ -36,6 +38,19 @@ public class InventoryDatabaseClient extends InventoryDatabase<ItemEntry> {
 
     public void getItems(List<ItemEntry> outList) {
         outList.addAll(clientItems);
+    }
+
+    /**
+     * Finds a stored item which can be used in place of the given (non-stackable) ingredient, ignoring NBT.
+     */
+    public ItemEntry findCompatibleItem(ItemStack ingredient) {
+        for (ItemEntry entry : clientItems) {
+            if (entry.getCount() > 0 && entry.getItem() == ingredient.getItem()
+                    && StoredCraftingRecipe.isIngredientCompatible(ingredient, entry.makeItemStack())) {
+                return entry;
+            }
+        }
+        return null;
     }
 
     public void readCompressedItems(byte[] compressed) throws IOException {

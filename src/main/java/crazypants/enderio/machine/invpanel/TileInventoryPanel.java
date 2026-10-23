@@ -149,6 +149,9 @@ public class TileInventoryPanel extends AbstractMachineEntity implements IFluidH
 
         if (shouldDoWorkThisTick(20)) {
             scanNetwork();
+        } else if (dbServer != null) {
+            // send changes to the client as soon as possible, so new items can be used without delay
+            dbServer.sendChangeLogs();
         }
 
         if (forceClientUpdate) {

@@ -4,6 +4,9 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -25,11 +28,14 @@ import crazypants.enderio.network.PacketHandler;
 public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
 
     private static final AtomicInteger nextGeneration = new AtomicInteger();
+    private static final int MAX_DIRTY_SLOTS_PER_TICK = 512;
 
     private final ItemConduitNetwork network;
     private int networkChangeCount;
 
     private AbstractInventory[] inventories;
+    private final IdentityHashMap<NetworkedInventory, AbstractInventory> inventoryMap = new IdentityHashMap<>();
+    private final LinkedHashSet<AbstractInventory> dirtyInventories = new LinkedHashSet<>();
     private int currentInventory;
     private ChangeLog changeLog;
     private boolean sentToClient;
@@ -163,6 +169,7 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
         complexRegistry.clear();
         complexItems.clear();
         currentInventory = 0;
+        dirtyInventories.clear();
         if (sentToClient) {
             PacketHandler.INSTANCE.sendToAll(new PacketDatabaseReset(generation));
             sentToClient = false;
@@ -174,6 +181,7 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
         generation = nextGeneration.incrementAndGet();
         networkChangeCount = network.getChangeCount();
 
+        inventoryMap.clear();
         List<NetworkedInventory> sources = network.getInventoryPanelSources();
         if (sources == null || sources.isEmpty()) {
             this.inventories = null;
@@ -182,6 +190,7 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
             for (int i = 0; i < sources.size(); i++) {
                 NetworkedInventory ni = sources.get(i);
                 inventories[i] = InventoryFactory.createInventory(ni);
+                inventoryMap.put(ni, inventories[i]);
             }
         }
 
@@ -240,7 +249,37 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
         power -= slots * Config.inventoryPanelScanCostPerSlot;
     }
 
+    /**
+     * Called when items were inserted into an inventory through the item conduit network (for example from the return
+     * area of an inventory panel). The inventory is scanned on the next tick, so the new items can be used right away
+     * instead of waiting for the regular scan cycle to reach this inventory.
+     */
+    public void inventoryChanged(NetworkedInventory ni) {
+        if (isCurrent()) {
+            AbstractInventory inv = inventoryMap.get(ni);
+            if (inv != null) {
+                dirtyInventories.add(inv);
+            }
+        }
+    }
+
+    private void scanDirtyInventories() {
+        if (dirtyInventories.isEmpty() || !isOperational()) {
+            return;
+        }
+        int scannedSlots = 0;
+        Iterator<AbstractInventory> iter = dirtyInventories.iterator();
+        while (iter.hasNext() && scannedSlots < MAX_DIRTY_SLOTS_PER_TICK) {
+            AbstractInventory inv = iter.next();
+            iter.remove();
+            int slots = inv.scanInventory(this);
+            scannedSlots += slots;
+            power -= slots * Config.inventoryPanelScanCostPerSlot;
+        }
+    }
+
     public void tick() {
+        scanDirtyInventories();
         if (--tickPause <= 0) {
             scanNextInventory();
         }
