@@ -43,6 +43,8 @@ public class TileInventoryPanel extends AbstractMachineEntity implements IFluidH
 
     public static final int MAX_STORED_CRAFTING_RECIPES = 6;
 
+    private static final int CHANGE_LOG_INTERVAL = 5;
+
     protected final SmartTank fuelTank;
     protected boolean tanksDirty;
 
@@ -50,6 +52,7 @@ public class TileInventoryPanel extends AbstractMachineEntity implements IFluidH
     private InventoryDatabaseClient dbClient;
 
     private boolean active;
+    private int changeLogTicks;
     private boolean extractionDisabled;
 
     public InventoryPanelContainer eventHandler;
@@ -149,8 +152,9 @@ public class TileInventoryPanel extends AbstractMachineEntity implements IFluidH
 
         if (shouldDoWorkThisTick(20)) {
             scanNetwork();
-        } else if (dbServer != null) {
-            // send changes to the client as soon as possible, so new items can be used without delay
+        } else if (dbServer != null && ++changeLogTicks >= CHANGE_LOG_INTERVAL) {
+            // send changes to the client more often than the network scan, so new items can be used without delay
+            changeLogTicks = 0;
             dbServer.sendChangeLogs();
         }
 

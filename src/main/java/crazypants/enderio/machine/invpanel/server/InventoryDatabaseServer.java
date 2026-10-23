@@ -29,6 +29,7 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
 
     private static final AtomicInteger nextGeneration = new AtomicInteger();
     private static final int MAX_DIRTY_SLOTS_PER_TICK = 512;
+    private static final int DIRTY_SCAN_COOLDOWN = 10;
 
     private final ItemConduitNetwork network;
     private int networkChangeCount;
@@ -40,6 +41,7 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
     private ChangeLog changeLog;
     private boolean sentToClient;
     private int tickPause;
+    private int tickCount;
     private float power;
 
     public InventoryDatabaseServer(ItemConduitNetwork network) {
@@ -251,11 +253,12 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
 
     /**
      * Called when items were inserted into an inventory through the item conduit network (for example from the return
-     * area of an inventory panel). The inventory is scanned on the next tick, so the new items can be used right away
-     * instead of waiting for the regular scan cycle to reach this inventory.
+     * area of an inventory panel). While an inventory panel GUI is open the inventory is scanned soon (at most once
+     * every {@link #DIRTY_SCAN_COOLDOWN} ticks), so the new items can be used right away instead of waiting for the
+     * regular scan cycle to reach this inventory.
      */
     public void inventoryChanged(NetworkedInventory ni) {
-        if (isCurrent()) {
+        if (changeLog != null && isCurrent()) {
             AbstractInventory inv = inventoryMap.get(ni);
             if (inv != null) {
                 dirtyInventories.add(inv);
@@ -264,14 +267,24 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
     }
 
     private void scanDirtyInventories() {
-        if (dirtyInventories.isEmpty() || !isOperational()) {
+        if (dirtyInventories.isEmpty()) {
+            return;
+        }
+        if (changeLog == null || !isOperational()) {
+            // nobody is looking, the regular scan cycle is good enough
+            dirtyInventories.clear();
             return;
         }
         int scannedSlots = 0;
         Iterator<AbstractInventory> iter = dirtyInventories.iterator();
         while (iter.hasNext() && scannedSlots < MAX_DIRTY_SLOTS_PER_TICK) {
             AbstractInventory inv = iter.next();
+            if (inv.nextDirtyScanTick - tickCount > 0) {
+                // scanned recently, keep it marked and scan it once the cooldown is over
+                continue;
+            }
             iter.remove();
+            inv.nextDirtyScanTick = tickCount + DIRTY_SCAN_COOLDOWN;
             int slots = inv.scanInventory(this);
             scannedSlots += slots;
             power -= slots * Config.inventoryPanelScanCostPerSlot;
@@ -279,6 +292,7 @@ public class InventoryDatabaseServer extends InventoryDatabase<ItemEntry> {
     }
 
     public void tick() {
+        tickCount++;
         scanDirtyInventories();
         if (--tickPause <= 0) {
             scanNextInventory();

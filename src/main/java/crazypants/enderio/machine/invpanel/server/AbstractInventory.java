@@ -6,6 +6,7 @@ abstract class AbstractInventory {
 
     static final SlotKey[] NO_SLOTS = new SlotKey[0];
     SlotKey[] slotKeys = NO_SLOTS;
+    int nextDirtyScanTick;
 
     protected void setEmpty(InventoryDatabaseServer db) {
         if (slotKeys.length != 0) {
