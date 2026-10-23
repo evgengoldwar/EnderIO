@@ -67,9 +67,7 @@ public class InventoryPanelNEIOverlayHandler implements IOverlayHandler {
 
         Map<Item, List<ItemStack>> available = new HashMap<>();
         addSlots(available, c.getCraftingGridSlots());
-        if (c.getInventoryPanel().isExtractionDisabled()) {
-            addSlots(available, c.getReturnAreaSlots());
-        }
+        addSlots(available, c.getReturnAreaSlots());
         addSlots(available, c.getPlayerInventorySlots());
         addSlots(available, c.getPlayerHotbarSlots());
         InventoryDatabaseClient db = guiInvPanel.getDatabase();

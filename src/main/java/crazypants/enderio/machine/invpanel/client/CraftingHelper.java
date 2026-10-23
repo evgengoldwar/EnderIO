@@ -87,7 +87,10 @@ public class CraftingHelper {
                             candidate = findAllCandidates(pstack, gui, db, candidates);
                         }
                         if (candidate == null) {
-                            return;
+                            // missing ingredient: leave this slot empty and fill the rest, like NEI does for a
+                            // normal crafting table
+                            slotsToProcess &= ~(1 << idx);
+                            continue;
                         }
                         candidate.used++;
                         candidates[idx] = candidate;
@@ -166,26 +169,17 @@ public class CraftingHelper {
 
     private Candidate findAllCandidates(ItemStack[] pstack, GuiInventoryPanel gui, InventoryDatabaseClient db,
             Candidate[] candidates) {
-        Candidate bestInventory = null;
-        Candidate bestNetwork = null;
+        Candidate best = null;
+        int bestTotal = 0;
         for (ItemStack istack : pstack) {
             Candidate candidate = findCandidates(istack, gui, db, candidates);
-            if (candidate.available > 0) {
-                if (bestInventory == null || bestInventory.available < candidate.available) {
-                    bestInventory = candidate;
-                }
-            }
-            if (candidate.entry != null) {
-                if (bestNetwork == null || bestNetwork.entry.getCount() < candidate.entry.getCount()) {
-                    bestNetwork = candidate;
-                }
+            int total = candidate.getTotal();
+            if (total > bestTotal) {
+                best = candidate;
+                bestTotal = total;
             }
         }
-        if (bestInventory != null) {
-            return bestInventory;
-        } else {
-            return bestNetwork;
-        }
+        return best;
     }
 
     private Candidate findCandidates(ItemStack stack, GuiInventoryPanel gui, InventoryDatabaseClient db,
@@ -197,12 +191,12 @@ public class CraftingHelper {
         }
         Candidate candidate = new Candidate(stack);
         InventoryPanelContainer container = gui.getContainer();
-        if (container.getInventoryPanel().isExtractionDisabled()) {
-            findCandidates(candidate, stack, container.getReturnAreaSlots());
-        }
+        // items cleared from the crafting grid end up in the return area, so take them from there first
+        findCandidates(candidate, stack, container.getReturnAreaSlots());
         findCandidates(candidate, stack, container.getPlayerInventorySlots());
         findCandidates(candidate, stack, container.getPlayerHotbarSlots());
-        if (candidate.available == 0 && db != null) {
+        // stackable ingredients are also taken from the network, so the grid can be filled to the maximum
+        if (db != null && (candidate.available == 0 || stack.isStackable())) {
             candidate.entry = db.lookupItem(stack, null, false);
             if (candidate.entry != null && candidate.entry.getCount() <= 0) {
                 candidate.entry = null;
@@ -234,6 +228,10 @@ public class CraftingHelper {
 
         public Candidate(ItemStack stack) {
             this.stack = stack;
+        }
+
+        int getTotal() {
+            return available + (entry != null ? entry.getCount() : 0);
         }
 
         public int getAvailable() {
